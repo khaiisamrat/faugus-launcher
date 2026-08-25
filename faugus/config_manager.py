@@ -9,6 +9,7 @@ class ConfigManager:
             'default-prefix': PREFIXES_DIR,
             'mangohud': 'False',
             'gamemode': 'False',
+            'game_performance': 'False',
             'sdl-enabled': 'False',
             'no-sleep-enabled': 'False',
             'default-runner': 'Proton-CachyOS Latest',

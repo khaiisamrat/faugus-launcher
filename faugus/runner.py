@@ -777,6 +777,7 @@ def build_launch_command(game):
     addapp_bat = expand_path(game.get("addapp_bat", ""))
     mangohud = game.get("mangohud", "")
     gamemode = game.get("gamemode", "")
+    game_performance = game.get("game_performance", "")
     sdl_enabled = game.get("sdl_enabled", "")
     no_sleep = game.get("no_sleep", "")
     addapp_enabled = game.get("addapp_enabled", "")
@@ -820,6 +821,8 @@ def build_launch_command(game):
     command_parts.extend(build_lossless_env(lossless_enabled, lossless_multiplier, lossless_flow, lossless_performance, lossless_hdr, lossless_present))
     if launch_arguments:
         command_parts.append(launch_arguments)
+    if game_performance and os.path.exists(GAME_PERFORMANCE):
+        command_parts.append("game-performance")
     if gamemode and os.path.exists(GAMEMODERUN):
         command_parts.append("gamemoderun")
     if mangohud and os.path.exists(MANGOHUD_DIR):

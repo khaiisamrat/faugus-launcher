@@ -202,6 +202,7 @@ def find_compatibilitytool(name):
     return None
 MANGOHUD_DIR = PathManager.find_binary('mangohud')
 GAMEMODERUN = PathManager.find_binary('gamemoderun')
+GAME_PERFORMANCE = PathManager.find_binary('game-performance')
 if APPIMAGE_PATH:
     LAUNCHER_PATH = APPIMAGE_PATH
     LAUNCHER_MODULE_ARGS = ""

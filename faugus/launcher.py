@@ -4128,6 +4128,13 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 else:
                     edit_game_dialog.checkbox_gamemode.set_active(False)
 
+            game_performance_enabled = os.path.exists(GAME_PERFORMANCE) or os.path.exists("/usr/games/game-performance")
+            if game_performance_enabled:
+                if getattr(game, "game_performance", False) == True:
+                    edit_game_dialog.checkbox_game_performance.set_active(True)
+                else:
+                    edit_game_dialog.checkbox_game_performance.set_active(False)
+
             if game.sdl_enabled == True:
                 edit_game_dialog.checkbox_sdl.set_active(True)
             else:
@@ -4399,12 +4406,14 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             if runner == "Steam":
                 mangohud = ""
                 gamemode = ""
+                game_performance = ""
                 sdl_enabled = ""
                 addapp_enabled = ""
                 no_sleep = ""
             else:
                 mangohud = True if add_game_dialog.checkbox_mangohud.get_active() else ""
                 gamemode = True if add_game_dialog.checkbox_gamemode.get_active() else ""
+                game_performance = True if add_game_dialog.checkbox_game_performance.get_active() else ""
                 sdl_enabled = True if add_game_dialog.checkbox_sdl.get_active() else ""
                 addapp_enabled = "addapp_enabled" if add_game_dialog.addapp_enabled else ""
                 no_sleep = True if add_game_dialog.checkbox_no_sleep.get_active() else ""
@@ -4447,6 +4456,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 post_launch=add_game_dialog.post_launch,
                 steam_user=add_game_dialog.combobox_steam_user.get_active_id() if launcher_id == "steam" else "",
                 disable_umu=disable_umu,
+                game_performance=game_performance,
             )
 
             desktop_shortcut_state = add_game_dialog.checkbox_shortcut_desktop.get_active()
@@ -4757,6 +4767,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             game.game_arguments = edit_game_dialog.entry_game_arguments.get_text()
             game.mangohud = edit_game_dialog.checkbox_mangohud.get_active()
             game.gamemode = edit_game_dialog.checkbox_gamemode.get_active()
+            game.game_performance = edit_game_dialog.checkbox_game_performance.get_active()
             game.sdl_enabled = edit_game_dialog.checkbox_sdl.get_active()
             game.protonfix = edit_game_dialog.entry_protonfix.get_text()
             game.runner = edit_game_dialog.combobox_runner.get_active_id()
@@ -5577,7 +5588,8 @@ class Settings(Gtk.Dialog):
         grid_tools.attach(self.checkbox_gamemode, 0, 1, 1, 1)
         grid_tools.attach(self.checkbox_no_sleep, 0, 2, 1, 1)
         grid_tools.attach(self.checkbox_sdl, 0, 3, 1, 1)
-        grid_tools.attach(box_buttons, 2, 0, 1, 4)
+        grid_tools.attach(self.checkbox_game_performance, 0, 4, 1, 1)
+        grid_tools.attach(box_buttons, 2, 0, 1, 5)
 
         grid_logs.attach(self.checkbox_logging, 0, 0, 1, 1)
         grid_logs.attach(self.button_clearlogs, 0, 1, 1, 1)
@@ -5862,6 +5874,7 @@ class Settings(Gtk.Dialog):
         config.set_value("default-runner", combobox_default_runner)
         config.set_value("mangohud", self.checkbox_mangohud.get_active())
         config.set_value("gamemode", self.checkbox_gamemode.get_active())
+        config.set_value("game_performance", self.checkbox_game_performance.get_active())
         config.set_value("sdl-enabled", self.checkbox_sdl.get_active())
         config.set_value("no-sleep-enabled", self.checkbox_no_sleep.get_active())
         config.set_value("discrete-gpu", self.checkbox_discrete_gpu.get_active())
@@ -6197,6 +6210,7 @@ class Settings(Gtk.Dialog):
         self.default_prefix = cfg.config.get('default-prefix', '').strip('"')
         mangohud = cfg.config.get('mangohud', 'False') == 'True'
         gamemode = cfg.config.get('gamemode', 'False') == 'True'
+        game_performance = cfg.config.get('game_performance', 'False') == 'True'
         sdl_enabled = cfg.config.get('sdl-enabled', 'False') == 'True'
         no_sleep = cfg.config.get('no-sleep-enabled', 'False') == 'True'
         self.default_runner = cfg.config.get('default-runner', '').strip('"')
@@ -6238,6 +6252,7 @@ class Settings(Gtk.Dialog):
 
         self.checkbox_mangohud.set_active(mangohud)
         self.checkbox_gamemode.set_active(gamemode)
+        self.checkbox_game_performance.set_active(game_performance)
         self.checkbox_sdl.set_active(sdl_enabled)
         self.checkbox_no_sleep.set_active(no_sleep)
 
@@ -6346,6 +6361,7 @@ class Game:
         post_launch="",
         steam_user="",
         disable_umu="",
+        game_performance="",
     ):
         self.gameid = gameid
         self.title = title
@@ -6354,6 +6370,7 @@ class Game:
         self.game_arguments = game_arguments
         self.mangohud = mangohud
         self.gamemode = gamemode
+        self.game_performance = game_performance
         self.prefix = prefix
         self.sdl_enabled = sdl_enabled
         self.protonfix = protonfix
@@ -7164,7 +7181,9 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_no_sleep.set_hexpand(True)
         self.grid_tools.attach(self.checkbox_sdl, 0, 3, 1, 1)
         self.checkbox_sdl.set_hexpand(True)
-        self.grid_tools.attach(box_buttons, 2, 0, 1, 4)
+        self.grid_tools.attach(self.checkbox_game_performance, 0, 4, 1, 1)
+        self.checkbox_game_performance.set_hexpand(True)
+        self.grid_tools.attach(box_buttons, 2, 0, 1, 5)
 
         page2.append(self.grid_protonfix)
         page2.append(self.grid_game_arguments)
@@ -7193,6 +7212,7 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_gamemode.set_active(self.default_gamemode)
         self.checkbox_no_sleep.set_active(self.default_no_sleep)
         self.checkbox_sdl.set_active(self.default_sdl_enabled)
+        self.checkbox_game_performance.set_active(self.default_game_performance)
 
         disable_mangohud_gamemode_if_missing(self)
 
@@ -7822,6 +7842,7 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.checkbox_gamemode.set_active(self.default_gamemode)
         self.checkbox_sdl.set_active(self.default_sdl_enabled)
         self.checkbox_no_sleep.set_active(self.default_no_sleep)
+        self.checkbox_game_performance.set_active(self.default_game_performance)
         self.checkbox_disable_umu.set_active(False)
         self.button_shortcut_icon.set_child(self.set_image_shortcut_icon())
         if os.path.isfile(self.cover_path_temp):
@@ -7977,6 +7998,7 @@ class AddGame(Gtk.Dialog, HiDpiMixin):
         self.default_gamemode = cfg.config.get('gamemode') == 'True'
         self.default_sdl_enabled = cfg.config.get('sdl-enabled') == 'True'
         self.default_no_sleep = cfg.config.get('no-sleep-enabled') == 'True'
+        self.default_game_performance = cfg.config.get('game_performance') == 'True'
 
     def on_button_run_clicked(self, widget):
         validation_result = self.validate_fields(entry="prefix")
@@ -8314,6 +8336,7 @@ def run_file(file_path):
     default_prefix = cfg.config.get('default-prefix', '').strip('"')
     mangohud = cfg.config.get('mangohud', 'False') == 'True'
     gamemode = cfg.config.get('gamemode', 'False') == 'True'
+    game_performance = cfg.config.get('game_performance', 'False') == 'True'
     sdl_enabled = cfg.config.get('sdl-enabled', 'False') == 'True'
     no_sleep = cfg.config.get('no-sleep-enabled', 'False') == 'True'
     default_runner = cfg.config.get('default-runner', '').strip('"')
@@ -8321,6 +8344,7 @@ def run_file(file_path):
     if file_path.endswith(".reg"):
         mangohud = False
         gamemode = False
+        game_performance = False
         sdl_enabled = False
         no_sleep = False
 
@@ -8334,6 +8358,8 @@ def run_file(file_path):
     command_parts.append(f'WINEPREFIX="{expand_path(default_prefix)}/default"')
     if default_runner:
         command_parts.append(f'PROTONPATH="{resolve_protonpath(default_runner)}"')
+    if game_performance and os.path.exists(GAME_PERFORMANCE):
+        command_parts.append("game-performance")
     if gamemode:
         command_parts.append("gamemoderun")
     if mangohud:

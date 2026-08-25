@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from faugus.path_manager import PathManager, GAMES_JSON, PRESETS_FILE, COMPATIBILITY_DIR, COMPATIBILITY_DIRS, find_compatibilitytool, PROTON_CACHYOS, MANGOHUD_DIR, GAMEMODERUN, ICONS_DIR, COVERS_DIR, FAUGUS_NOTIFICATION, FILECHOOSER_FOLDERS_FILE, IS_FLATPAK, CONFIG_FILE_DIR
+from faugus.path_manager import PathManager, GAMES_JSON, PRESETS_FILE, COMPATIBILITY_DIR, COMPATIBILITY_DIRS, find_compatibilitytool, PROTON_CACHYOS, MANGOHUD_DIR, GAMEMODERUN, GAME_PERFORMANCE, ICONS_DIR, COVERS_DIR, FAUGUS_NOTIFICATION, FILECHOOSER_FOLDERS_FILE, IS_FLATPAK, CONFIG_FILE_DIR
 from gi.repository import Gtk, Gdk, Gio, GLib, GdkPixbuf, Pango, GObject, Adw
 
 os.environ.setdefault("VK_LOADER_LAYERS_DISABLE", "VK_LAYER_LSFGVK_frame_generation")
@@ -876,6 +876,14 @@ def disable_mangohud_gamemode_if_missing(obj):
         obj.checkbox_gamemode.set_tooltip_text(
             _("Tweaks your system to improve performance") + "\n" + _("GameMode not found"))
 
+    obj.game_performance_enabled = os.path.exists(GAME_PERFORMANCE) or os.path.exists("/usr/games/game-performance")
+    if not obj.game_performance_enabled:
+        obj.checkbox_game_performance.set_sensitive(False)
+        obj.checkbox_game_performance.set_active(False)
+        obj.checkbox_game_performance.set_tooltip_text(
+            _("Sets the CPU power profile to performance while the game is running")
+            + "\n" + _("game-performance not found"))
+
 
 def create_mangohud_gamemode_checkboxes(obj):
     obj.checkbox_mangohud = Gtk.CheckButton(label="MangoHud")
@@ -883,6 +891,9 @@ def create_mangohud_gamemode_checkboxes(obj):
         _("Shows an overlay for monitoring FPS, temperatures, CPU/GPU load and more"))
     obj.checkbox_gamemode = Gtk.CheckButton(label="GameMode")
     obj.checkbox_gamemode.set_tooltip_text(_("Tweaks your system to improve performance"))
+    obj.checkbox_game_performance = Gtk.CheckButton(label=_("Game Performance"))
+    obj.checkbox_game_performance.set_tooltip_text(
+        _("Sets the CPU power profile to performance while the game is running"))
 
 
 def choose_shortcut_icon(obj):
@@ -1130,7 +1141,7 @@ def populate_combobox_with_runners(combobox):
 GAME_FIELDS = [
     "gameid", "title", "path", "prefix",
     "launch_arguments", "game_arguments",
-    "mangohud", "gamemode", "sdl_enabled",
+    "mangohud", "gamemode", "game_performance", "sdl_enabled",
     "protonfix", "runner",
     "addapp_enabled", "addapp", "addapp_bat", "addapp_delay", "addapp_first",
     "cover",
@@ -1150,6 +1161,7 @@ def game_to_save_dict(game, hidden=None):
     d = {**game_to_dict(game),
          "mangohud": True if game.mangohud else "",
          "gamemode": True if game.gamemode else "",
+         "game_performance": True if game.game_performance else "",
          "sdl_enabled": True if game.sdl_enabled else "",
          "addapp_enabled": "addapp_enabled" if game.addapp_enabled else "",
          "disable_umu": True if game.disable_umu else ""}

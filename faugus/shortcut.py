@@ -147,7 +147,8 @@ class CreateShortcut(Gtk.ApplicationWindow, HiDpiMixin):
         self.grid_tools.attach(self.checkbox_gamemode, 0, 1, 1, 1)
         self.grid_tools.attach(self.checkbox_no_sleep, 0, 2, 1, 1)
         self.grid_tools.attach(self.checkbox_sdl, 0, 3, 1, 1)
-        self.grid_tools.attach(self.button_shortcut_icon, 1, 0, 1, 4)
+        self.grid_tools.attach(self.checkbox_game_performance, 0, 4, 1, 1)
+        self.grid_tools.attach(self.button_shortcut_icon, 1, 0, 1, 5)
         self.button_shortcut_icon.set_hexpand(True)
         self.button_shortcut_icon.set_valign(Gtk.Align.CENTER)
 
@@ -220,11 +221,13 @@ class CreateShortcut(Gtk.ApplicationWindow, HiDpiMixin):
 
         mangohud = cfg.config.get('mangohud', 'False') == 'True'
         gamemode = cfg.config.get('gamemode', 'False') == 'True'
+        game_performance = cfg.config.get('game_performance', 'False') == 'True'
         sdl_enabled = cfg.config.get('sdl-enabled', 'False') == 'True'
         no_sleep = cfg.config.get('no-sleep-enabled', 'False') == 'True'
 
         self.checkbox_mangohud.set_active(mangohud)
         self.checkbox_gamemode.set_active(gamemode)
+        self.checkbox_game_performance.set_active(game_performance)
         self.checkbox_sdl.set_active(sdl_enabled)
         self.checkbox_no_sleep.set_active(no_sleep)
 
@@ -279,6 +282,7 @@ class CreateShortcut(Gtk.ApplicationWindow, HiDpiMixin):
 
         mangohud = True if self.checkbox_mangohud.get_active() else ""
         gamemode = True if self.checkbox_gamemode.get_active() else ""
+        game_performance = True if self.checkbox_game_performance.get_active() else ""
         sdl_enabled = True if self.checkbox_sdl.get_active() else ""
         no_sleep = True if self.checkbox_no_sleep.get_active() else ""
 
@@ -295,6 +299,8 @@ class CreateShortcut(Gtk.ApplicationWindow, HiDpiMixin):
         if launch_arguments:
             command_parts.append(launch_arguments)
         command_parts.extend(build_lossless_env(lossless_enabled, lossless_multiplier, lossless_flow, lossless_performance, lossless_hdr, lossless_present))
+        if game_performance and os.path.exists(GAME_PERFORMANCE):
+            command_parts.append("game-performance")
         if gamemode:
             command_parts.append("gamemoderun")
         if mangohud:
