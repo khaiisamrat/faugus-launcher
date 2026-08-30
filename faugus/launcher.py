@@ -22,7 +22,7 @@ from faugus.ea_fix import *
 from faugus.migration import fix_legacy_shortcut_icons
 from faugus.main_screen_nav import adjust_widget_value, carrousel_move_coalesced, focus_bottom_bar_by_column, focus_flowbox_child, focus_top_bar, navigate_focus
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 
 if IS_FLATPAK:
     tray_icon = 'io.github.Faugus.faugus-launcher'
@@ -1085,6 +1085,13 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
                 if g.title == title:
                     self.carrousel_index = i
                     self.render_carrousel()
+
+                    def grab_carrousel_focus():
+                        if hasattr(self, 'carrousel_fixed'):
+                            self.carrousel_fixed.grab_focus()
+                        return False
+
+                    GLib.idle_add(grab_carrousel_focus)
                     return
             return
 
@@ -1744,10 +1751,17 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
         deco_entry.add_css_class("game")
         deco_entry.add_css_class("list-row-entry")
 
+        anim_box = Gtk.Box()
+        anim_box.add_css_class("launch-overlay")
+        anim_box.set_hexpand(True)
+        anim_box.set_vexpand(True)
+        anim_box.set_can_target(False)
+
         card_overlay = Gtk.Overlay()
         card_overlay.set_child(deco_entry)
         card_overlay.add_overlay(hbox)
         card_overlay.set_measure_overlay(hbox, True)
+        card_overlay.add_overlay(anim_box)
 
         card = GObject.new(Gtk.Box, css_name="entry")
         card.append(card_overlay)
@@ -1764,6 +1778,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             "card": card,
             "picture": picture,
             "label": label,
+            "anim_box": anim_box,
             "style_provider": style_provider,
             "offset": offset,
             "gameid": None,
@@ -1909,7 +1924,7 @@ class Main(Gtk.ApplicationWindow, HiDpiMixin):
             slot["_can_target"] = can_target
 
         carrousel_fixed = getattr(self, 'carrousel_fixed', None)
-        is_focused = carrousel_fixed is not None and carrousel_fixed.is_focus()
+        is_focused = carrousel_fixed is not None and carrousel_fixed.get_property("has-focus")
         if not is_focused and d < 0.5:
             scale = 1.0
 
