@@ -46,6 +46,14 @@ def run_in_background(fn, *args, **kwargs):
     return _background_executor.submit(fn, *args, **kwargs)
 
 
+def idle_add_while_open(closed_event, fn, *args):
+    def run():
+        if not closed_event.is_set():
+            fn(*args)
+        return False
+    GLib.idle_add(run)
+
+
 def kill_by_faugusid(gameid):
     if not gameid:
         return
@@ -54,12 +62,12 @@ def kill_by_faugusid(gameid):
 MARKER="FAUGUSID=$1"
 for d in /proc/[0-9]*; do
     pid=${d#/proc/}
-    if tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qxF "$MARKER"; then
+    if cat "$d"/task/*/environ 2>/dev/null | tr "\0" "\n" | grep -qxF "$MARKER"; then
         kill -9 "$pid" 2>/dev/null
     fi
 done
 '''
-    cmd = ["flatpak-spawn", "--host", "sh", "-c", script, "_", gameid] if IS_FLATPAK else ["sh", "-c", script, "_", gameid]
+    cmd = ["sh", "-c", script, "_", gameid]
     try:
         subprocess.run(cmd, capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
@@ -253,8 +261,8 @@ def wrap_with_spinner(widget, dim_shape="none"):
     return overlay, spinner
 
 
-def create_accent_placeholder_paintable(width, height, alpha=0.4):
-    r, g, b = get_effective_accent_rgb()
+def create_accent_placeholder_paintable(width, height, alpha=0.4, rgb=None):
+    r, g, b = rgb if rgb is not None else get_effective_accent_rgb()
 
     w = width * HIDPI_SCALE
     h = height * HIDPI_SCALE
@@ -331,12 +339,18 @@ class IdComboBox(Gtk.DropDown):
     def release(self):
         factory = self.get_factory()
         if factory:
-            factory.disconnect_by_func(self._on_factory_setup)
-            factory.disconnect_by_func(self._on_factory_bind)
+            try:
+                factory.disconnect_by_func(self._on_factory_setup)
+                factory.disconnect_by_func(self._on_factory_bind)
+            except TypeError:
+                pass
         list_factory = self.get_list_factory()
         if list_factory:
-            list_factory.disconnect_by_func(self._on_factory_setup)
-            list_factory.disconnect_by_func(self._list_factory_bind_func)
+            try:
+                list_factory.disconnect_by_func(self._on_factory_setup)
+                list_factory.disconnect_by_func(self._list_factory_bind_func)
+            except TypeError:
+                pass
         self.disconnect_by_func(self._on_notify_selected)
 
     def configure_ellipsize(self, max_width_chars=20):
@@ -476,13 +490,26 @@ def build_grid(margin_top=True, margin_bottom=True, column_homogeneous=False):
     return grid
 
 
-def build_bottom_button_box(button_cancel, button_ok):
+def track_cell_editing(renderer):
+    state = {"editable": None}
+
+    def on_editing_started(r, editable, path):
+        state["editable"] = editable
+        editable.connect("remove-widget", lambda e: state.update(editable=None))
+
+    renderer.connect("editing-started", on_editing_started)
+    return lambda: state["editable"] and state["editable"].editing_done()
+
+
+def build_bottom_button_box(button_cancel, button_ok, *middle_buttons):
     bottom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
     bottom_box.set_homogeneous(True)
     bottom_box.set_margin_start(10)
     bottom_box.set_margin_end(10)
     bottom_box.set_margin_bottom(10)
     bottom_box.append(button_cancel)
+    for button in middle_buttons:
+        bottom_box.append(button)
     bottom_box.append(button_ok)
     return bottom_box
 
@@ -494,6 +521,7 @@ def build_dialog_ok_cancel_box(dialog):
 
     button_ok = Gtk.Button(label=_("Ok"))
     button_ok.set_hexpand(True)
+    button_ok.set_focus_on_click(False)
     button_ok.connect("clicked", lambda b: dialog.response(Gtk.ResponseType.OK))
 
     return build_bottom_button_box(button_cancel, button_ok)
@@ -642,10 +670,17 @@ def set_file_chooser_start_folder(filechooser, key, preferred_path=None):
     filechooser.set_current_folder(Gio.File.new_for_path(folder))
 
     def remember_folder(fc, response):
-        current = fc.get_current_folder()
-        path = current.get_path() if current else None
-        if path and _last_filechooser_folder.get(key) != path:
-            _last_filechooser_folder[key] = path
+        if response != Gtk.ResponseType.ACCEPT:
+            return
+
+        selected = fc.get_file()
+        path = selected.get_path() if selected else None
+        if not path:
+            return
+
+        folder = path if os.path.isdir(path) else os.path.dirname(path)
+        if folder and _last_filechooser_folder.get(key) != folder:
+            _last_filechooser_folder[key] = folder
             save_json_file(_last_filechooser_folder, FILECHOOSER_FOLDERS_FILE)
 
     filechooser.connect("response", remember_folder)
@@ -667,6 +702,175 @@ def add_windows_file_filters(filechooser):
     filechooser.add_filter(windows_filter)
     filechooser.add_filter(all_files_filter)
     filechooser.set_filter(windows_filter)
+
+
+def list_prefix_shortcuts(prefix):
+    roots = (
+        os.path.join(prefix, "drive_c", "users"),
+        os.path.join(prefix, "drive_c", "ProgramData"),
+    )
+    found = set()
+    for root in roots:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in filenames:
+                if filename.lower().endswith(".lnk"):
+                    found.add(os.path.join(dirpath, filename))
+    return found
+
+
+def parse_lnk_target_path(lnk_path):
+    try:
+        with open(lnk_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+
+    if len(data) < 76 or data[:4] != b"\x4c\x00\x00\x00":
+        return None
+
+    link_flags = int.from_bytes(data[20:24], "little")
+    has_link_target_id_list = 0x01
+    has_link_info = 0x02
+
+    offset = 76
+    if link_flags & has_link_target_id_list:
+        if offset + 2 > len(data):
+            return None
+        id_list_size = int.from_bytes(data[offset:offset + 2], "little")
+        offset += 2 + id_list_size
+
+    if not (link_flags & has_link_info) or offset + 8 > len(data):
+        return None
+
+    link_info_start = offset
+    link_info_header_size = int.from_bytes(data[link_info_start + 4:link_info_start + 8], "little")
+    link_info_flags = int.from_bytes(data[link_info_start + 8:link_info_start + 12], "little")
+
+    volume_id_and_local_base_path = 0x01
+    if not (link_info_flags & volume_id_and_local_base_path):
+        return None
+
+    local_base_path_offset = int.from_bytes(data[link_info_start + 16:link_info_start + 20], "little")
+    local_base_path_offset_unicode = 0
+    if link_info_header_size >= 0x24 and link_info_start + 32 <= len(data):
+        local_base_path_offset_unicode = int.from_bytes(
+            data[link_info_start + 28:link_info_start + 32], "little"
+        )
+
+    if local_base_path_offset_unicode:
+        start = link_info_start + local_base_path_offset_unicode
+        end = data.find(b"\x00\x00", start)
+        if end == -1:
+            return None
+        if (end - start) % 2 != 0:
+            end += 1
+        try:
+            return data[start:end].decode("utf-16-le")
+        except UnicodeDecodeError:
+            return None
+
+    if local_base_path_offset:
+        start = link_info_start + local_base_path_offset
+        end = data.find(b"\x00", start)
+        if end == -1:
+            return None
+        try:
+            return data[start:end].decode("cp1252", errors="replace")
+        except UnicodeDecodeError:
+            return None
+
+    return None
+
+
+def windows_path_to_prefix_path(win_path, prefix):
+    win_path = win_path.strip().strip('"')
+    if len(win_path) < 2 or win_path[1] != ":":
+        return None
+    drive_letter = win_path[0].lower()
+    rest = re.sub(r'\\+', '/', win_path[2:]).lstrip("/")
+    if drive_letter == "c":
+        return os.path.join(prefix, "drive_c", rest)
+    dosdevice = os.path.join(prefix, "dosdevices", f"{drive_letter}:")
+    if os.path.islink(dosdevice):
+        return os.path.join(os.path.realpath(dosdevice), rest)
+    return None
+
+
+def resolve_case_insensitive_path(path):
+    if os.path.isfile(path):
+        return path
+
+    directory = os.path.dirname(path)
+    target_name = os.path.basename(path)
+    if not os.path.isdir(directory):
+        return None
+
+    try:
+        for entry in os.listdir(directory):
+            if entry.lower() == target_name.lower() and os.path.isfile(os.path.join(directory, entry)):
+                return os.path.join(directory, entry)
+    except OSError:
+        pass
+
+    return None
+
+
+_SHORTCUT_UTILITY_KEYWORDS = ("uninstall", "setup", "config", "readme")
+
+
+def is_utility_shortcut(*names):
+    combined = " ".join(n for n in names if n).lower()
+    return any(keyword in combined for keyword in _SHORTCUT_UTILITY_KEYWORDS)
+
+
+def resolve_new_shortcuts(prefix, shortcut_paths):
+    by_name = {}
+    for path in shortcut_paths:
+        by_name.setdefault(os.path.basename(path).lower(), []).append(path)
+
+    results = []
+    for paths in by_name.values():
+        name = os.path.splitext(os.path.basename(paths[0]))[0].strip()
+        if not name or is_utility_shortcut(os.path.basename(paths[0]), name):
+            continue
+
+        target = None
+        for lnk_path in paths:
+            target_win = parse_lnk_target_path(lnk_path)
+            if not target_win:
+                continue
+            candidate = windows_path_to_prefix_path(target_win, prefix)
+            resolved = resolve_case_insensitive_path(candidate) if candidate else None
+            if resolved and resolved.lower().endswith(".exe"):
+                target = resolved
+                break
+
+        if not target:
+            continue
+
+        dirs = [os.path.dirname(p).replace(os.sep, "/") for p in paths]
+        results.append({
+            "name": name,
+            "target": target,
+            "on_desktop": any("/Desktop" in d for d in dirs),
+            "on_appmenu": any("/Start Menu" in d for d in dirs),
+            "shortcut_path": paths[0],
+        })
+
+    return results
+
+
+def pick_best_shortcut(resolved):
+    if not resolved:
+        return None
+    return min(resolved, key=lambda r: r["name"].lower())
+
+
+def detect_installed_executable(prefix, existing_shortcuts):
+    new_shortcuts = list_prefix_shortcuts(prefix) - existing_shortcuts
+    resolved = resolve_new_shortcuts(prefix, new_shortcuts)
+    best = pick_best_shortcut(resolved)
+    return best["target"] if best else None
 
 
 def add_image_file_filters(filechooser, include_ico=True):
@@ -773,6 +977,12 @@ def show_message_dialog(text1, text2="", parent=None, confirm_label=None, cancel
     content_area.set_vexpand(True)
     content_area.set_hexpand(True)
 
+    frame = Gtk.Frame()
+    frame.set_margin_start(10)
+    frame.set_margin_end(10)
+    frame.set_margin_top(10)
+    frame.set_margin_bottom(10)
+
     box_top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     box_top.set_margin_start(20)
     box_top.set_margin_end(20)
@@ -805,7 +1015,9 @@ def show_message_dialog(text1, text2="", parent=None, confirm_label=None, cancel
     button_confirm.connect("clicked", lambda w: dialog.response(Gtk.ResponseType.OK))
     box_bottom.append(button_confirm)
 
-    content_area.append(box_top)
+    frame.set_child(box_top)
+
+    content_area.append(frame)
     content_area.append(box_bottom)
 
     def on_response(d, response_id):
@@ -927,17 +1139,17 @@ def choose_shortcut_icon(obj):
     filechooser.present()
 
 
-_registered_css_keys = set()
+_css_providers = {}
 
 
 def add_css_once(key, css, priority=Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION):
-    if key in _registered_css_keys:
-        return
-    _registered_css_keys.add(key)
+    css_provider = _css_providers.get(key)
+    if css_provider is None:
+        css_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, priority)
+        _css_providers[key] = css_provider
 
-    css_provider = Gtk.CssProvider()
     css_provider.load_from_data(css.encode('utf-8') if isinstance(css, str) else css)
-    Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, priority)
 
 
 def load_red_entry_css():
@@ -962,6 +1174,21 @@ def load_frame_css():
         }
         """,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+
+
+def load_compact_time_spin_css():
+    add_css_once(
+        "compact_time_spin",
+        """
+        spinbutton.compact-time-spin {
+            padding: 0;
+        }
+        spinbutton.compact-time-spin text {
+            padding: 0 2px;
+        }
+        """,
+        Gtk.STYLE_PROVIDER_PRIORITY_USER,
     )
 
 
@@ -1058,6 +1285,10 @@ def update_games_json():
             game["runner"] = "Proton-CachyOS (System)"
             changed = True
 
+        if game.get("disable_umu") and game.get("runtime") != "disable-runtime":
+            game["runtime"] = "disable-runtime"
+            changed = True
+
         if "favorite" in game:
             if game["favorite"] == True:
                 game["category"] = False
@@ -1107,30 +1338,39 @@ def populate_combobox_with_runners(combobox):
     combobox.append("Proton-GE Latest", "GE-Proton {}".format(_("Latest")))
     combobox.append("Proton-EM Latest", "Proton-EM {}".format(_("Latest")))
     combobox.append("DW-Proton Latest", "DW-Proton {}".format(_("Latest")))
+    combobox.append("Proton-Wineland Latest", "Proton-Wineland {}".format(_("Latest")))
     combobox.append("", "UMU-Proton {}".format(_("Latest")))
 
     if os.path.exists(PROTON_CACHYOS):
         combobox.append("Proton-CachyOS (System)", "Proton-CachyOS ({})".format(_("System")))
 
+    reserved_names = (
+        "UMU-Latest", "LegacyRuntime",
+        "Proton-GE Latest", "Proton-EM Latest",
+        "DW-Proton Latest", "Proton-CachyOS Latest",
+        "Proton-Wineland Latest",
+    )
+
     try:
-        versions = set()
+        flatpak_dir = COMPATIBILITY_DIRS[-1] if len(COMPATIBILITY_DIRS) > 1 else None
+        versions = {}
         for compat_dir in COMPATIBILITY_DIRS:
             if not os.path.exists(compat_dir):
                 continue
             for entry in os.listdir(compat_dir):
                 entry_path = os.path.join(compat_dir, entry)
-                if (
-                    os.path.isdir(entry_path)
-                    and entry not in (
-                        "UMU-Latest", "LegacyRuntime",
-                        "Proton-GE Latest", "Proton-EM Latest",
-                        "DW-Proton Latest", "Proton-CachyOS Latest",
-                    )
-                ):
-                    versions.add(entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                if entry in reserved_names:
+                    if compat_dir == flatpak_dir:
+                        combobox.append(entry_path, f"{entry} ({_('Flatpak')})")
+                    continue
+                if entry not in versions:
+                    versions[entry] = compat_dir
 
         for version in sorted(versions, key=version_key, reverse=True):
-            combobox.append(version, version)
+            label = f"{version} ({_('Flatpak')})" if versions[version] == flatpak_dir else version
+            combobox.append(version, label)
     except Exception as e:
         print(f"Error accessing the directory: {e}")
 
@@ -1149,7 +1389,7 @@ GAME_FIELDS = [
     "lossless_performance", "lossless_hdr", "lossless_present",
     "playtime", "hidden", "no_sleep", "category", "icon",
     "steamgriddb_id", "pre_launch", "post_launch",
-    "steam_user", "disable_umu",
+    "steam_user", "disable_umu", "runtime", "last_played",
 ]
 
 
@@ -1244,6 +1484,8 @@ def show_launch_arguments_dialog(parent, current_launch_arguments, current_pre_l
             return True
         return False
 
+    commit_presets_edit = track_cell_editing(renderer_presets)
+
     renderer_presets.connect("edited", on_preset_edited)
     key_controller_presets = Gtk.EventControllerKey()
     key_controller_presets.connect("key-pressed", on_preset_key_press)
@@ -1329,6 +1571,8 @@ def show_launch_arguments_dialog(parent, current_launch_arguments, current_pre_l
                     model.append([""])
             return True
         return False
+
+    commit_args_edit = track_cell_editing(renderer_args)
 
     renderer_args.connect("edited", on_arg_edited)
     key_controller_args = Gtk.EventControllerKey()
@@ -1511,6 +1755,9 @@ def show_launch_arguments_dialog(parent, current_launch_arguments, current_pre_l
         pre_launch = current_pre_launch
         post_launch = current_post_launch
         if response == Gtk.ResponseType.OK:
+            commit_presets_edit()
+            commit_args_edit()
+
             presets_to_save = [row[0] for row in store_presets if row[0].strip()]
             save_json_file(presets_to_save, PRESETS_FILE)
 
@@ -1576,6 +1823,7 @@ def show_addapp_dialog(parent, addapp_enabled, addapp, addapp_delay, addapp_firs
             _("Select an additional application"),
             Gtk.FileChooserAction.OPEN,
         )
+        set_file_chooser_start_folder(filechooser, "addapp", entry_addapp.get_text() or None)
         add_windows_file_filters(filechooser)
 
         def on_search_response(dialog_fc, resp):
@@ -1931,7 +2179,7 @@ def get_effective_accent_rgb():
     from faugus.config_manager import ConfigManager
     cfg = ConfigManager()
     theme_engine = cfg.config.get('theme-engine', 'adwaita').strip('"')
-    accent_color = cfg.config.get('accent-color', 'system').strip('"')
+    accent_color = cfg.get_accent_color()
 
     if theme_engine == "adwaita":
         if accent_color and accent_color != "system":
@@ -2239,7 +2487,19 @@ def show_steamgriddb_picker(obj, category):
     stack.add_named(scrolled, "content")
     stack.set_visible_child_name("loading")
 
-    dialog.get_content_area().append(stack)
+    search_entry = Gtk.SearchEntry()
+    search_entry.set_text(game_name)
+    search_entry.set_margin_start(10)
+    search_entry.set_margin_end(10)
+    search_entry.set_margin_top(10)
+
+    content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    content_box.set_vexpand(True)
+    content_box.set_hexpand(True)
+    content_box.append(search_entry)
+    content_box.append(stack)
+
+    dialog.get_content_area().append(content_box)
 
     thumb_w = 660 if is_list else 160
     thumb_h = int(thumb_w / ratios.get(category, 1.0))
@@ -2275,9 +2535,19 @@ def show_steamgriddb_picker(obj, category):
             GLib.idle_add(apply_ui)
         run_in_background(fetch_full)
 
-    def populate(items):
-        if closed_state[0]:
+    search_token = [0]
+
+    def clear_items():
+        child = items_container.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            items_container.remove(child)
+            child = next_child
+
+    def populate(items, token):
+        if closed_state[0] or token != search_token[0]:
             return False
+        clear_items()
         if not items:
             empty_label = Gtk.Label(label=_("No results found"))
             empty_label.set_margin_top(20)
@@ -2311,11 +2581,9 @@ def show_steamgriddb_picker(obj, category):
         stack.set_visible_child_name("content")
         return False
 
-    def fetch_candidates():
-        import requests
-
+    def fetch_candidates(term, term_game_id, term_steam_appid, token):
         candidates = fetch_steamgriddb_candidates(
-            api_key, game_name, limit=24, game_id=game_id, steam_appid=steam_appid
+            api_key, term, limit=24, game_id=term_game_id, steam_appid=term_steam_appid
         )
         items = candidates.get(keys.get(category), [])
 
@@ -2338,10 +2606,23 @@ def show_steamgriddb_picker(obj, category):
                 downloaded = list(pool.map(download_thumb, items))
             results = [d for d in downloaded if d]
 
-        if not closed_state[0]:
-            GLib.idle_add(populate, results)
+        if not closed_state[0] and token == search_token[0]:
+            GLib.idle_add(populate, results, token)
 
-    run_in_background(fetch_candidates)
+    def start_search(term, term_game_id=None, term_steam_appid=None):
+        if closed_state[0] or not term:
+            return
+        search_token[0] += 1
+        token = search_token[0]
+        stack.set_visible_child_name("loading")
+        run_in_background(fetch_candidates, term, term_game_id, term_steam_appid, token)
+
+    def on_search_activate(entry):
+        start_search(entry.get_text().strip())
+
+    search_entry.connect("activate", on_search_activate)
+
+    start_search(game_name, game_id, steam_appid)
 
     dialog.present()
 

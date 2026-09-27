@@ -193,7 +193,6 @@ def _migrate_config_json_values():
         "prevent-sleep": "no-sleep-enabled",
         "close-onlaunch": "auto-close-on-launch",
         "show-labels": "labels-enabled",
-        "enable-logging": "logging-enabled",
         "start-boot": "autostart-enabled",
         "start-minimized": "minimized-startup-enabled",
         "show-categories": "categories-and-sort-enabled",
@@ -209,6 +208,14 @@ def _migrate_config_json_values():
         value = config.pop("categories-and-sort-enabled")
         config.setdefault("categories-enabled", value)
         config.setdefault("sort-enabled", value)
+        changed = True
+
+    if 'accent-mode' not in config and 'accent-color' in config:
+        if config['accent-color'] == 'system':
+            config['accent-mode'] = 'system'
+            config['accent-color'] = 'rgb(61,174,233)'
+        else:
+            config['accent-mode'] = 'custom'
         changed = True
 
     inverted_key_renames = {"splash-disable": "splash-window-enabled", "disable-updates": "automatic-updates"}
@@ -484,7 +491,7 @@ def _backup_before_migration():
         sys.exit(0)
 
     backup_root = Path(chosen_dir)
-    zip_path = backup_root / f"faugus-migration-backup-{date.today().isoformat()}.zip"
+    archive_base = backup_root / f"faugus-migration-backup-{date.today().isoformat()}"
 
     staging_dir = Path(tempfile.mkdtemp(prefix="faugus-migration-backup-"))
 
@@ -515,7 +522,7 @@ def _backup_before_migration():
     restore_script.chmod(0o755)
 
     backup_root.mkdir(parents=True, exist_ok=True)
-    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=str(staging_dir))
+    shutil.make_archive(str(archive_base), "gztar", root_dir=str(staging_dir))
     shutil.rmtree(staging_dir)
 
     marker.parent.mkdir(parents=True, exist_ok=True)

@@ -41,13 +41,12 @@ def load_running_ids():
         return set()
 
 
-def spawn(module_args):
+def spawn(module_args, cwd=None):
     proc = subprocess.Popen(
         [sys.executable, "-m"] + module_args,
+        cwd=cwd,
         env=subprocess_env(),
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         close_fds=True,
     )
     GLib.child_watch_add(proc.pid, lambda pid, status: None)
@@ -88,6 +87,10 @@ def run_tray_entrypoint(launch_ui, console_mode=False):
     config = load_config()
     mono_icon = config.get("mono-icon", "False") == "True"
 
+    if config.get('backup-auto-enabled', 'False') == 'True':
+        from faugus.backup_daemon import start_daemon_now
+        start_daemon_now()
+
     loop = GLib.MainLoop()
 
     def on_present():
@@ -103,10 +106,11 @@ def run_tray_entrypoint(launch_ui, console_mode=False):
                 pass
         loop.quit()
 
-    def on_launch(gameid):
+    def on_launch(gameid, path):
         if gameid in load_running_ids():
             return
-        spawn(["faugus.runner", "--game", gameid])
+        game_dir = os.path.dirname(os.path.expandvars(os.path.expanduser(path)))
+        spawn(["faugus.runner", "--game", gameid], cwd=game_dir if os.path.isdir(game_dir) else None)
 
     tray = TrayIcon(mono_icon=mono_icon, on_present=on_present, on_quit=on_quit, on_launch=on_launch)
     tray.start()
@@ -174,7 +178,11 @@ def bootstrap():
         return
 
     config = load_config()
-    if config.get("system-tray", "False") != "True":
+    system_tray_enabled = config.get("system-tray", "False") == "True"
+    if not start_hidden and system_tray_enabled and config.get("minimized-startup-enabled", "False") == "True":
+        start_hidden = True
+
+    if not system_tray_enabled:
         ui_args = []
         if start_hidden:
             ui_args.append("--hide")

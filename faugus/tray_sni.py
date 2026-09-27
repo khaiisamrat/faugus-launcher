@@ -1,7 +1,7 @@
 import json
 
 from gi.repository import Gio, GLib
-from faugus.path_manager import APP_ID, FAUGUS_MONO_ICON, FAUGUS_PNG, GAMES_JSON, LATEST_GAMES
+from faugus.path_manager import APP_ID, FAUGUS_MONO_ICON, FAUGUS_PNG, GAMES_JSON
 from faugus.language_config import setup_gettext
 
 _ = setup_gettext('faugus-launcher')
@@ -245,25 +245,19 @@ class TrayIcon:
         invocation.return_value(None)
 
     def rebuild_menu(self):
-        games_by_id = {}
+        entries = []
         for entry in load_json_file(GAMES_JSON, []):
             gameid = entry.get("gameid")
-            if gameid:
-                games_by_id[gameid] = entry.get("title", gameid)
+            last_played = entry.get("last_played")
+            if gameid and last_played:
+                entries.append((last_played, gameid, entry.get("title", gameid), entry.get("path", "")))
 
-        recent = []
-        for gameid in load_json_file(LATEST_GAMES, default=[]):
-            gameid = gameid.strip()
-            if len(recent) >= len(self.RECENT_SLOT_IDS):
-                break
-            title = games_by_id.get(gameid)
-            if not title:
-                continue
-            recent.append((gameid, title))
+        entries.sort(reverse=True)
+        recent = [(gameid, title, path) for _last_played, gameid, title, path in entries[:len(self.RECENT_SLOT_IDS)]]
 
         items = []
-        for slot_id, (gameid, title) in zip(self.RECENT_SLOT_IDS, recent):
-            items.append({"id": slot_id, "label": title, "action": lambda gid=gameid: self.on_launch(gid)})
+        for slot_id, (gameid, title, path) in zip(self.RECENT_SLOT_IDS, recent):
+            items.append({"id": slot_id, "label": title.replace("_", "__"), "action": lambda gid=gameid, p=path: self.on_launch(gid, p)})
 
         if items:
             items.append({"id": self.SEPARATOR_ID, "separator": True})

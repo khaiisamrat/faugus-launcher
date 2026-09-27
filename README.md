@@ -31,7 +31,7 @@ sudo dpkg --add-architecture i386
 sudo apt update
 sudo apt install -y wget
 mkdir -p ~/faugus-launcher
-wget -P ~/faugus-launcher https://github.com/Faugus/faugus-launcher/releases/download/2.2.1/faugus-launcher_2.2.1-1_all.deb
+wget -P ~/faugus-launcher https://github.com/Faugus/faugus-launcher/releases/download/2.4.2/faugus-launcher_2.4.2-1_all.deb
 sudo apt install -y ~/faugus-launcher/*.deb
 sudo rm -r ~/faugus-launcher
 ```
@@ -154,7 +154,9 @@ Translations are managed on [Weblate](https://hosted.weblate.org/projects/faugus
 <details>
 <summary><b>Settings</b></summary>
 <br>
-<img src=screenshots/settings.png/>
+<img src=screenshots/settings-general.png/>
+<br>
+<img src=screenshots/settings-interface.png/>
 </details>
 
 <details>

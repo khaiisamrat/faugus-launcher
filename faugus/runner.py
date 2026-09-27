@@ -9,12 +9,13 @@ import time
 import shlex
 import signal
 import warnings
+from datetime import datetime
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gtk, Gdk, GLib
+from gi.repository import Gtk, GLib
 from threading import Thread, Event
 from faugus.config_manager import *
 from faugus.utils import *
@@ -86,12 +87,13 @@ def warm_up_gpu():
 
 
 class FaugusRun(HiDpiMixin):
-    def __init__(self, message, command=None, pre_launch="", post_launch="", gameid=""):
+    def __init__(self, message, command=None, pre_launch="", post_launch="", gameid="", with_logs=False):
         self.message = message
         self.command = command
         self.pre_launch = pre_launch
         self.post_launch = post_launch
         self.gameid = gameid
+        self.logging_enabled = with_logs
         self.process = None
         self.splash_window = None
         self.log_window = None
@@ -129,9 +131,6 @@ class FaugusRun(HiDpiMixin):
                     self.cfg.set_value("donate-last", current_month)
                     self.cfg.save_config()
 
-        if self.splash_window_enabled and self.automatic_updates:
-            GLib.idle_add(self.show_splash)
-
         set_env("PROTON_EAC_RUNTIME", EAC_DIR)
         set_env("PROTON_BATTLEYE_RUNTIME", BE_DIR)
 
@@ -151,6 +150,9 @@ class FaugusRun(HiDpiMixin):
         set_env("UMU_CONTAINER_NSENTER", "1")
 
         self.extract_env_from_message()
+
+        if self.splash_window_enabled and self.automatic_updates and not os.environ.get("DISABLE_UMU"):
+            GLib.idle_add(self.show_splash)
 
         if self.command == "winetricks":
             GLib.idle_add(self.show_log_window)
@@ -194,13 +196,13 @@ class FaugusRun(HiDpiMixin):
                         if "steam" in file or "proton" in file:
                             os.remove(f"{target_dir}/{file}")
 
-        if not os.environ.get("WINEPREFIX"):
-            if not os.environ.get("PROTONPATH") == "umu-sniper":
+        if not os.environ.get("WINEPREFIX") and not os.environ.get("DISABLE_UMU"):
+            if not os.environ.get("PROTONPATH") in ["umu-steamrt4", "umu-sniper", "umu-soldier", "umu-scout", "umu-host"]:
                 set_env("WINEPREFIX", f"{self.default_prefix}/default")
                 set_env("PROTONPATH", f"{resolve_protonpath(self.default_runner)}")
 
         protonpath = os.environ.get("PROTONPATH")
-        if protonpath and protonpath != "Proton-GE Latest" and protonpath != "Proton-EM Latest" and protonpath != "Proton-CachyOS Latest" and protonpath != "DW-Proton Latest" and protonpath != "umu-sniper":
+        if protonpath and protonpath not in ["Proton-GE Latest", "Proton-EM Latest", "Proton-CachyOS Latest", "DW-Proton Latest", "Proton-Wineland Latest", "umu-steamrt4", "umu-sniper", "umu-soldier", "umu-scout", "umu-host"]:
             if protonpath == "Proton-CachyOS (System)" and not os.path.exists(PROTON_CACHYOS):
                 self.close_splash_window()
                 self.show_error_dialog(protonpath)
@@ -228,6 +230,14 @@ class FaugusRun(HiDpiMixin):
         if protonpath == "DW-Proton Latest":
             self.proton_latest = "--dw"
             self.proton_exists = find_compatibilitytool("DW-Proton Latest") is not None
+
+        if protonpath == "Proton-Wineland Latest":
+            self.proton_latest = "--wineland"
+            self.proton_exists = find_compatibilitytool("Proton-Wineland Latest") is not None
+
+        if protonpath and "wineland" in protonpath.lower():
+            os.environ.pop("PROTON_ENABLE_WAYLAND", None)
+            _env_set.discard("PROTON_ENABLE_WAYLAND")
 
         self.components_exists = (
             os.path.exists(EAC_DIR) and
@@ -293,10 +303,11 @@ class FaugusRun(HiDpiMixin):
                 self.process = process
                 GLib.child_watch_add(GLib.PRIORITY_DEFAULT, process.pid, self.on_process_exit)
                 Thread(target=self._watch_game_process, daemon=True).start()
+                self.progress_save_source = GLib.timeout_add_seconds(30, self._save_progress_tick)
                 if log_file:
                     def close_log_later():
                         for t in threads:
-                            t.join(timeout=5)
+                            t.join()
                         log_file.flush()
                         log_file.close()
                     Thread(target=close_log_later, daemon=True).start()
@@ -320,7 +331,7 @@ class FaugusRun(HiDpiMixin):
         cmds_to_run = []
         is_sniper = os.environ.get("PROTONPATH") == "umu-sniper"
         force_off = os.environ.get("FAUGUS_DISABLE_UPDATES") or not self.automatic_updates
-        if not force_off or not self.components_exists:
+        if not os.environ.get("DISABLE_UMU") and (not force_off or not self.components_exists):
             cmds_to_run.append([sys.executable, "-m", "faugus.components"])
 
         if not is_sniper:
@@ -339,6 +350,15 @@ class FaugusRun(HiDpiMixin):
 
         game_cmd = popen_prefix + shlex.split(self.message)
         self.start_time = time.time()
+
+        self.cfg_playtime_baseline = self.playtime
+        self.game_playtime_baseline = 0
+        if self.gameid:
+            for saved_game in load_json_file(GAMES_JSON, []):
+                if saved_game.get("gameid") == self.gameid:
+                    self.game_playtime_baseline = saved_game.get("playtime", 0)
+                    break
+
         start_and_watch(game_cmd, is_game=True)
 
     def show_donate_dialog(self):
@@ -495,7 +515,6 @@ class FaugusRun(HiDpiMixin):
         self.default_runner = self.cfg.config.get('default-runner', '')
         self.lossless_location = expand_path(self.cfg.config.get('lossless-location', ''))
         self.default_prefix = expand_path(self.cfg.config.get('default-prefix', ''))
-        self.logging_enabled = self.cfg.config.get('logging-enabled', 'False') == 'True'
         self.wayland_driver = self.cfg.config.get('wayland-driver', 'False') == 'True'
         self.wow64_enabled = self.cfg.config.get('wow64-enabled', 'False') == 'True'
         self.show_donate = self.cfg.config.get('show-donate', 'False') == 'True'
@@ -506,7 +525,7 @@ class FaugusRun(HiDpiMixin):
         apply_theme_engine(theme_engine)
         apply_interface_customization(
             self.cfg.config.get('interface-theme', 'system'),
-            self.cfg.config.get('accent-color', 'system'),
+            self.cfg.get_accent_color(),
             theme_engine,
         )
 
@@ -603,6 +622,8 @@ class FaugusRun(HiDpiMixin):
                 component = "Proton-CachyOS"
             elif "DW-Proton" in clean_line:
                 component = "DW-Proton"
+            elif "Proton-Wineland" in clean_line:
+                component = "Proton-Wineland"
             elif "steamrt3" in clean_line or "steamrt4" in clean_line or "SteamLinuxRuntime" in clean_line:
                 component = "Steam Runtime"
 
@@ -691,6 +712,30 @@ class FaugusRun(HiDpiMixin):
 
         return False
 
+    def _save_progress_tick(self):
+        self._save_progress()
+        return True
+
+    def _save_progress(self):
+        runtime = int(time.time() - self.start_time)
+        if runtime <= 0:
+            return
+
+        self.cfg.load_config()
+        self.cfg.set_value("playtime", self.cfg_playtime_baseline + runtime)
+        self.cfg.save_config()
+
+        if not self.gameid:
+            return
+
+        games = load_json_file(GAMES_JSON, [])
+        for game in games:
+            if game.get("gameid") == self.gameid:
+                game["playtime"] = self.game_playtime_baseline + runtime
+                game["last_played"] = datetime.now().isoformat()
+                break
+        save_json_file(games, GAMES_JSON)
+
     def on_process_exit(self, pid, condition):
         import psutil
 
@@ -714,32 +759,27 @@ class FaugusRun(HiDpiMixin):
                 except psutil.NoSuchProcess:
                     pass
 
-        end_time = time.time()
-        runtime = int(end_time - getattr(self, "start_time", end_time))
-
         if self.post_launch:
             try:
                 subprocess.Popen(self.post_launch, shell=True, env=child_env())
             except Exception as e:
                 print(f"Error running post-launch command: {e}")
 
-        self.cfg.load_config()
-        self.playtime = int(self.cfg.config.get("playtime", 0))
-        self.cfg.set_value("playtime", self.playtime + runtime)
-        self.cfg.save_config()
+        if getattr(self, "progress_save_source", None):
+            GLib.source_remove(self.progress_save_source)
+            self.progress_save_source = None
 
-        game_id = os.environ.get("FAUGUSID")
+        self._save_progress()
 
-        if game_id:
-            games = load_json_file(GAMES_JSON, [])
-            if games:
-                for game in games:
-                    if game.get("gameid") == game_id:
-                        old_time = game.get("playtime", 0)
-                        game["playtime"] = old_time + runtime
-                        break
-
-                save_json_file(games, GAMES_JSON)
+        if self.gameid:
+            try:
+                connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                connection.call_sync(
+                    TRAY_BUS_NAME, TRAY_OBJECT_PATH, TRAY_INTERFACE, "RefreshMenu",
+                    None, None, Gio.DBusCallFlags.NONE, -1, None,
+                )
+            except GLib.Error:
+                pass
 
         if self.logging_enabled:
             target_dir = f"{LOGS_DIR}/{self.log_dir}"
@@ -789,6 +829,7 @@ def build_launch_command(game):
     lossless_present = game.get("lossless_present", "")
     icon = game.get("icon", "")
     disable_umu = bool(game.get("disable_umu", "")) and runner == "Linux-Native"
+    linux_runtime = game.get("runtime","")
 
     if gameid == "ea-app":
         path = update_ea_path(prefix)
@@ -808,14 +849,30 @@ def build_launch_command(game):
         command_parts.append(f"GAMEID={protonfix}")
     if runner:
         if runner == "Linux-Native":
-            if not disable_umu:
-                command_parts.append('PROTONPATH=umu-sniper')
+            if disable_umu:
+                command_parts.append("DISABLE_UMU=1")
+            elif linux_runtime:
+                command_parts.append(f"PROTONPATH={linux_runtime}")
         elif runner == "Proton-CachyOS (System)":
             command_parts.append(f"WINEPREFIX={shlex.quote(prefix)}")
             command_parts.append(f"PROTONPATH={PROTON_CACHYOS}")
         else:
             command_parts.append(f"WINEPREFIX={shlex.quote(prefix)}")
-            command_parts.append(f"PROTONPATH='{runner}'")
+            reserved_names = (
+                "Proton-GE Latest", "Proton-EM Latest",
+                "DW-Proton Latest", "Proton-CachyOS Latest",
+                "Proton-Wineland Latest",
+            )
+            if os.path.isdir(runner):
+                command_parts.append(f"PROTONPATH={shlex.quote(runner)}")
+            elif runner in reserved_names:
+                command_parts.append(f"PROTONPATH='{runner}'")
+            else:
+                resolved_runner = find_compatibilitytool(runner)
+                if resolved_runner and len(COMPATIBILITY_DIRS) > 1 and resolved_runner.parent == COMPATIBILITY_DIRS[-1]:
+                    command_parts.append(f"PROTONPATH={shlex.quote(str(resolved_runner))}")
+                else:
+                    command_parts.append(f"PROTONPATH='{runner}'")
     else:
         command_parts.append(f"WINEPREFIX={shlex.quote(prefix)}")
     command_parts.extend(build_lossless_env(lossless_enabled, lossless_multiplier, lossless_flow, lossless_performance, lossless_hdr, lossless_present))
@@ -902,6 +959,7 @@ def main():
     parser.add_argument("--game")
     parser.add_argument("--pre-launch", default="")
     parser.add_argument("--post-launch", default="")
+    parser.add_argument("--logs", action="store_true")
 
     args = parser.parse_args()
 
@@ -911,9 +969,9 @@ def main():
             return
 
         launch_options = build_launch_command(game)
-        FaugusRun(launch_options, None, game.get("pre_launch", ""), game.get("post_launch", ""), args.game).run()
+        FaugusRun(launch_options, None, game.get("pre_launch", ""), game.get("post_launch", ""), args.game, with_logs=args.logs).run()
     else:
-        FaugusRun(args.message, args.command, args.pre_launch, args.post_launch).run()
+        FaugusRun(args.message, args.command, args.pre_launch, args.post_launch, with_logs=args.logs).run()
 
 
 if __name__ == "__main__":

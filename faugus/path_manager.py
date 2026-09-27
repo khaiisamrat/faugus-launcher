@@ -94,7 +94,7 @@ class PathManager:
         if native_steam.is_dir():
             return str(native_steam / 'compatibilitytools.d')
 
-        flatpak_steam = Path(PathManager.user_home('.var/app/com.valvesoftware.Steam/data/Steam'))
+        flatpak_steam = Path(PathManager.user_home('.var/app/com.valvesoftware.Steam/.local/share/Steam'))
         if flatpak_steam.is_dir():
             return str(flatpak_steam / 'compatibilitytools.d')
 
@@ -105,7 +105,7 @@ class PathManager:
         base_dir = Path(os.getenv('HOST_XDG_DATA_HOME', Path.home() / '.local' / 'share'))
         native_steam = base_dir / 'Steam' / 'compatibilitytools.d'
         flatpak_steam = Path(
-            PathManager.user_home('.var/app/com.valvesoftware.Steam/data/Steam')
+            PathManager.user_home('.var/app/com.valvesoftware.Steam/.local/share/Steam')
         ) / 'compatibilitytools.d'
 
         dirs = [native_steam]
@@ -341,8 +341,8 @@ def _backup_before_legacy_migration():
     try:
         from faugus.migration import _backup_before_migration
         _backup_before_migration()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error backing up before migration: {e}")
 
 
 _backup_before_legacy_migration()
